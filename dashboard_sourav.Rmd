@@ -1,0 +1,374 @@
+---
+title: "COVID-19 dashboard by Sourav"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(ggthemes) 
+library(plotly)
+library(sf)
+library(leaflet)
+library(gganimate)
+library(tmap)
+library(lubridate)
+library(ggmap)
+library(gridExtra)
+library(ggplot2)
+library(hrbrthemes)
+library(plotly)
+#county shape file
+download.file("https://geoportaal.maaamet.ee/docs/haldus_asustus/maakond_shp.zip", destfile="maakond_shp.zip")
+
+unzip("maakond_shp.zip")
+
+#covid cases data
+covid <- read_delim("F:/R_directory/assignment8/opendata_covid19_test_county_all.csv")
+
+# import county shape
+counties <- st_read("maakond_20220101.shp") 
+
+#covid test result
+positive <- read_delim("F:/R_directory/assignment8/opendata_covid19_test_results.csv")
+
+hos <- read.csv("F:/R_directory/assignment8/hospitalization.csv")
+
+vaccine <- read_delim("F:/R_directory/assignment8/opendata_covid19_vaccination_location_county.csv")
+
+v_provider <- read_delim("F:/R_directory/assignment8/opendata_covid19_vaccination_providertype_doses.csv")
+```
+
+# Covid Cases
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Chart A: Map of distribution of COVID-19 infections in counties
+
+```{r}
+
+#show only the positive values
+covid_p = dplyr::filter(covid, ResultValue %in% c("P"))
+
+
+#removing maakong
+covid_no_maakkond <- covid_p %>% 
+  mutate(County = gsub(" maakond", "", County))
+
+
+#filtering NA
+covid_test_county_all <- covid_no_maakkond %>% 
+  filter(!is.na(County))
+
+#interactive map
+gg_cov_cases <- ggplot()+
+  geom_line(data = covid_test_county_all, aes(x = StatisticsDate, y = DailyCases), size = .25)+
+  facet_wrap(vars(County), scale = "free_y", ncol = 3) 
+
+plotly::ggplotly(gg_cov_cases)
+ 
+
+```
+
+### Chart B: Covid cases by all county on 05-01-2022
+
+```{r}
+
+covid19_test_county_all_latest <- covid_test_county_all %>% 
+  select(CountyEHAK, DailyCases, StatisticsDate) %>% 
+  filter(StatisticsDate == max(StatisticsDate))
+
+#simplify
+counties <- counties %>% 
+  st_simplify(preserveTopology = TRUE, dTolerance = 200) %>% 
+  st_cast("MULTIPOLYGON") 
+
+
+
+#join
+covid19_test_county_all_latest_sf <- left_join(counties, covid19_test_county_all_latest, by = c("MKOOD" = "CountyEHAK"))
+
+#xentroid
+covid19_test_county_all_latest_sf_cntr <- covid19_test_county_all_latest_sf %>% 
+  st_centroid()
+
+#transform to crs 4326
+covid19_test_county_all_latest_sf_4326 <- covid19_test_county_all_latest_sf %>% 
+  st_transform(4326)
+
+covid19_test_county_all_latest_sf_cntr_4326 <- covid19_test_county_all_latest_sf_cntr %>%   st_transform(4326)
+
+tmap_mode("view")
+
+tm_shape(covid19_test_county_all_latest_sf_4326)+
+  tm_polygons(col = "DailyCases", 
+              style = "pretty",
+              palette = "Reds",
+              alpha = .7)+
+tm_shape(covid19_test_county_all_latest_sf_cntr_4326)+
+  tm_text(text = "DailyCases",
+          bg.color = "grey",
+          shadow = T)+ 
+  tm_view(set.view = c(25.01, 58.60, 7))
+  
+
+```
+
+### Chart C: Positive sample by age group (01-12-2021 to 31-12-2021)
+```{r}
+
+
+positive_by_county = dplyr::filter(positive, ResultValue %in% c("P"))
+
+#removing maakond
+positive_by_county_no_maakond <- positive_by_county %>% 
+  mutate(County = gsub(" maakond", "", County))
+
+#filtering NA
+positive_by_county_no_maakond_na <- positive_by_county_no_maakond %>% 
+  filter(!is.na(County))
+
+#filterdate
+age_group <-  positive_by_county_no_maakond_na%>%
+  select(AgeGroup, StatisticsDate, County, ResultValue) %>%
+  filter(StatisticsDate >= as.Date("2021-12-01") & StatisticsDate <= as.Date("2021-12-31"))
+
+
+#covert column to numeric
+age_group_1 <- age_group %>% 
+  mutate(ResultValue = gsub("P", as.numeric(1), ResultValue))
+
+#glimpse(age_group_1)
+
+#convert character to integer
+age_group_1$ResultValue <- as.integer(as.character(age_group_1$ResultValue))
+
+
+#library(dplyr)
+age_group_summary <- age_group_1 %>% 
+  group_by(AgeGroup,StatisticsDate) %>% 
+  summarise(ResultValue = sum(ResultValue))
+
+#strip plot
+strip_dec <- ggplot(age_group_summary, aes(StatisticsDate, AgeGroup, fill = ResultValue))+ geom_tile()
+
+ggplotly(strip_dec)
+
+
+```
+# Comparison
+
+### Chart A: Covid cases in December 2021
+
+```{r}
+
+
+#covid in december
+covid_dec <-  covid_test_county_all%>%
+  select(StatisticsDate, County, CountyEHAK, ResultValue, DailyCases, TotalCases) %>%
+  filter(StatisticsDate >= as.Date("2021-12-01") & StatisticsDate <= as.Date("2021-12-31"))
+
+#library(dplyr)
+covid_dec_sum <- covid_dec %>% 
+  group_by(CountyEHAK) %>% 
+  summarise(DailyCases = sum(DailyCases))
+
+#join
+covid_dec_sum_sf <- left_join(counties, covid_dec_sum, by = c("MKOOD" = "CountyEHAK"))
+
+#centroid
+covid_dec_sum_sf_cntr <- covid_dec_sum_sf %>% 
+  st_centroid()
+
+#transform to crs 4326
+covid_dec_sum_sf_4326 <- covid_dec_sum_sf %>% 
+  st_transform(4326)
+
+covid_dec_sum_sf_cntr_4326 <- covid_dec_sum_sf_cntr %>% 
+  st_transform(4326)
+
+tmap_mode("view")
+
+#plotting
+c_dec <- tm_shape(covid_dec_sum_sf_4326)+
+  tm_polygons(col = "DailyCases", 
+              style = "pretty",
+              palette = "YlOrRd",
+              alpha = .7,
+              title='total cases in December')+
+  
+  tm_shape(covid_dec_sum_sf_cntr_4326 )+
+  tm_text(text = "DailyCases",
+          bg.color = "grey",
+          shadow = T)+
+  tm_view(set.view = c(25.01, 58.60, 7))
+
+c_dec
+
+```
+### Chart B: Covid cases in November 2021
+```{r}
+#covid in november
+
+covid_nov <-  covid_test_county_all%>%
+  select(StatisticsDate, County, CountyEHAK, ResultValue, DailyCases, TotalCases) %>%
+  filter(StatisticsDate >= as.Date("2021-11-01") & StatisticsDate <= as.Date("2021-11-30"))
+
+#group by ehak code
+covid_nov_sum <- covid_nov %>% 
+  group_by(CountyEHAK) %>% 
+  summarise(DailyCases = sum(DailyCases))
+
+#sf
+covid_nov_sum_sf <- left_join(counties, covid_nov_sum, by = c("MKOOD" = "CountyEHAK"))
+
+#centroid
+covid_nov_sum_sf_cntr <- covid_nov_sum_sf %>% 
+  st_centroid()
+
+#crs transformation
+covid_nov_sum_sf_4326 <- covid_nov_sum_sf %>% 
+  st_transform(4326)
+
+covid_nov_sum_sf_cntr_4326 <- covid_nov_sum_sf_cntr %>% 
+  st_transform(4326)
+
+
+#map
+c_nov <- tm_shape(covid_nov_sum_sf_4326)+
+  tm_polygons(col = "DailyCases", 
+              style = "pretty",
+              palette = "YlOrRd",
+              alpha = .7,
+              title='total cases in November')+
+  tm_shape(covid_nov_sum_sf_cntr_4326)+
+  tm_text(text = "DailyCases",
+          bg.color = "grey",
+          shadow = T)+
+  tm_view(set.view = c(25.01, 58.60, 7))
+
+c_nov 
+
+
+```
+
+
+
+
+# Vaccination
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+### Chart A: Fully Vaccinated Population coverage by % of population in counties
+```{r}
+fully_vaccinated = dplyr::filter(vaccine, MeasurementType %in% c("FullyVaccinated"))
+
+#removing maakong
+fully_vaccinated_no_maakkond <- fully_vaccinated %>% 
+  mutate(LocationCounty = gsub(" maakond", "", LocationCounty))
+
+
+#filtering NA
+fully_vaccinated_no_maakkond_na <- fully_vaccinated_no_maakkond %>% 
+  filter(!is.na(LocationCounty))
+
+
+#vaccinated till the last date
+fully_vaccinated_bylast_date <- fully_vaccinated_no_maakkond_na %>% 
+  select(LocationCountyEHAK, PopulationCoverage, StatisticsDate) %>% 
+  filter(StatisticsDate == max(StatisticsDate))
+
+#join
+fully_vaccinated_no_maakkond_na_sf <- left_join(counties, fully_vaccinated_bylast_date, by = c("MKOOD" = "LocationCountyEHAK"))
+
+
+#centroid
+fully_vaccinated_no_maakkond_na_sf_cntr <- fully_vaccinated_no_maakkond_na_sf %>% 
+  st_centroid()
+
+
+#crs transformation
+fully_vaccinated_no_maakkond_na_sf_4326 <- fully_vaccinated_no_maakkond_na_sf %>% 
+  st_transform(4326)
+
+fully_vaccinated_no_maakkond_na_sf_cntr_4326 <- fully_vaccinated_no_maakkond_na_sf_cntr %>%   st_transform(4326)
+
+tmap_mode("view")
+
+#map
+tm_shape(fully_vaccinated_no_maakkond_na_sf_4326)+
+  tm_polygons(col = "PopulationCoverage", 
+              style = "pretty",
+              palette = "Reds",
+              alpha = .7,
+              title='% of population coverage')+
+tm_shape(fully_vaccinated_no_maakkond_na_sf_cntr_4326)+
+  tm_text(text = "PopulationCoverage",
+          bg.color = "grey",
+          shadow = T)+
+  tm_view(set.view = c(25.01, 58.60, 7))
+
+
+
+
+```
+
+### Chart B: Percentage of Population Vaccinated with at least one dose by County
+```{r}
+
+vaccinated_1 = dplyr::filter(vaccine, MeasurementType %in% c("Vaccinated"))
+
+
+#removing maakond
+vaccinated_1_no_maakkond <- vaccinated_1 %>% 
+  mutate(LocationCounty = gsub(" maakond", "", LocationCounty))
+
+
+#filtering NA
+vaccinated_1_no_maakkond_na <- vaccinated_1_no_maakkond %>% 
+  filter(!is.na(LocationCounty))
+
+
+#chart for all counties
+vaccination_coverage <- ggplot(data=vaccinated_1_no_maakkond_na, aes(x=StatisticsDate, y=PopulationCoverage, group = LocationCounty, colour = LocationCounty))+
+  geom_line()
+
+plotly::ggplotly(vaccination_coverage)
+
+```
+### Chart C: Vaccination provider in Estonia
+```{r}
+#filtering null
+v_na <- v_provider %>% 
+  filter(!is.na(ProviderServiceType))
+
+#selecting last date of the dataset
+vaccine_provider <- v_na %>% 
+  select(StatisticsDate, ProviderServiceType, TotalCount) %>% 
+  filter(StatisticsDate == max(StatisticsDate))
+
+
+v_pro <- ggplot(data=vaccine_provider, aes(x=TotalCount, y=ProviderServiceType)) +
+  geom_bar(stat="identity", width=0.5)
+plotly::ggplotly(v_pro)
+```
+
+### Chart D: Hospitalization due to Covid on 31-12-2021 by age and gender group
+```{r}
+#replacing M to male and N to female in column gender
+hos_m <- hos %>% 
+  mutate(Gender = gsub("M", "Male", Gender))
+hos_f<- hos_m %>% 
+  mutate(Gender = gsub("N", "Female", Gender))
+
+hospitalization <- ggplot(hos_f,aes(AgeGroup,PatientCount,fill=Gender))+
+  geom_bar(stat="identity",position="dodge")+
+  scale_x_discrete(guide = guide_axis(angle = 90))
+
+plotly::ggplotly(hospitalization)
+```
+
